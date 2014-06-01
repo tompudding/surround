@@ -79,10 +79,10 @@ class Sound(object):
         self.wave = wave.open(filename)
         if self.wave.getsampwidth() != 2:
             raise TypeError('Expected 2byte wav, got %d byte' % self.wave.getsampwidth())
-        if self.wave.getnchannels() != 1:
-            raise TypeError('Expected mono sound')
+        #if self.wave.getnchannels() != 1:
+        #    raise TypeError('Expected mono sound')
         
-        self.samples = numpy.array([(float(struct.unpack('<h',self.wave.readframes(1))[0])/0x8000) for i in xrange(self.wave.getnframes())]).astype('f')
+        self.samples = numpy.array([(float(struct.unpack('<h',self.wave.readframes(1)[:2])[0])/0x8000) for i in xrange(self.wave.getnframes())]).astype('f')
 
         freq = self.wave.getframerate()
         if freq == 44100:
@@ -95,7 +95,7 @@ class Sound(object):
     def amplify(self,scale):
         self.samples *= scale
         
-class Seaside(object):
+class Environment(object):
     random_sound_period = 3.0
     def __init__(self,path):
         self.sounds = []
@@ -159,7 +159,7 @@ class Seaside(object):
         if self.pos > len(self.audio_buffer[0]) - self.client.buffer_size:
             self.reset_audio_buffer()
 
-seaside = Seaside('sounds/seaside')
+seaside = Environment('sounds/dungeon')
 last = None
 with JackClient() as client:
     seaside.set_client(client)

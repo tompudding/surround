@@ -101,13 +101,6 @@ class JackClient(object):
         
         self.input_buffer = numpy.zeros((1,self.buffer_size), 'f')
         self.output_buffer = numpy.ones((6,self.buffer_size), 'f')
-        #x = numpy.sin( 2*numpy.pi*4400.0 * (numpy.arange(0,sec*6,1.0/(self.sample_rate),'f')[0:int(self.sample_rate*sec)*6]))
-        #print len(x),int(self.sample_rate*sec)
-        #self.output = numpy.reshape( x,
-        #                             (6, int(self.sample_rate*sec)) ).astype('f')
-        #for i in xrange(6):
-        #    for j in xrange(self.buffer_size):
-        #        self.output_buffer[i][j] = 0.5
 
     def play(self,output):
         while True:
@@ -126,11 +119,9 @@ class Sound(object):
         self.wave = wave.open(filename)
         if self.wave.getsampwidth() != 2:
             raise TypeError('Expected 2byte wav, got %d byte' % self.wave.getsampwidth())
-        #if self.wave.getnchannels() != 1:
-        #    raise TypeError('Expected mono sound')
+
         self.samples = self.wave.readframes(self.wave.getnframes())
         self.samples = (numpy.fromstring(self.samples,numpy.int16)[::2].astype('f'))/0x8000
-        #self.samples = numpy.array([(float(struct.unpack('<h',self.wave.readframes(1)[:2])[0])/0x8000) for i in xrange(self.wave.getnframes())]).astype('f')
 
         freq = self.wave.getframerate()
         if freq == 44100:
@@ -163,16 +154,6 @@ class Sound(object):
                 volumes.extend([volume]*num)
             volumes = numpy.column_stack(volumes)
             self.path_samples *= volumes
-        # for i,volume in enumerate(volumes):
-        #     start_sample = i*samples_per_segment
-        #     end_sample = start_sample + samples_per_segment
-        #     if i+1 == len(volumes):
-        #         #last one
-        #         end_sample = len(self.samples)-1
-            
-        #     for j in xrange(start_sample,end_sample):
-        #         for k,p_volume in enumerate(volume):
-        #             self.path_samples[k][j] *= p_volume
         
         
 class Environment(object):
@@ -180,15 +161,22 @@ class Environment(object):
     def __init__(self,path):
         self.sounds = []
         self.client = None
+        self.background = None
+        self.second_background = None
         for filename in glob.glob(os.path.join(path,'*.wav')):
             sound = Sound(filename)
             if os.path.basename(filename) == 'background.wav':
                 self.background = sound
+            elif os.path.basename(filename) == 'second_background.wav':
+                #This is a hack only allowing two backgrounds, but I need this for sunday...
+                self.second_background = sound
+                self.second_background.set_path(None)
             else:
                 sound.amplify(6)
                 pos = Point(random.random()*2.2,random.random()*2.2)
                 sound.set_path( LinePath(pos,pos,1) )
                 self.sounds.append(sound)
+        
         self.timeline = []
         for i in xrange(10):
             self.add_random_sound()
@@ -208,8 +196,7 @@ class Environment(object):
     def set_client(self,client):
         self.client = client
 
-    def add_sound_to_buffer(self,sound):
-        #speaker = random.choice((0,1,2,3,4))
+    def add_sound_to_buffer(self,sound,random_position = True):
         #Cut the audio_buffer at this point
         self.audio_buffer = self.audio_buffer[:,self.pos:]
         self.pos = 0
@@ -217,7 +204,7 @@ class Environment(object):
         print 'Adding %d samples' % len(sound.path_samples[0])
         while( len(self.audio_buffer[0]) < len(sound.samples) ):
             self.extend_audio_buffer()
-        if sound.moving:
+        if sound.moving or not random_position:
             self.audio_buffer[:,:len(sound.samples)] += sound.path_samples
         else:
             #Not moving so choose a random point for it
@@ -230,6 +217,10 @@ class Environment(object):
     def reset_audio_buffer(self):
         self.audio_buffer = numpy.tile(self.background.samples, (6,1)).astype('f')
         self.pos = 0
+        if self.second_background:
+            assert len(self.second_background.samples) < len(self.background.samples)
+            self.audio_buffer[:,:len(self.second_background.samples)] += self.second_background.path_samples
+            self.second_background.samples_left = len(self.second_background.samples)
         
     def process(self,t):
         if self.start == None:
@@ -243,14 +234,19 @@ class Environment(object):
             self.add_sound_to_buffer(random_sound)
             self.add_random_sound()
         self.client.play(self.audio_buffer[:,self.pos:self.pos+self.client.buffer_size])
+        if self.second_background:
+            self.second_background.samples_left -= self.client.buffer_size
+            if self.second_background.samples_left < self.client.buffer_size:
+                self.add_sound_to_buffer(self.second_background,random_position = False)
+                self.second_background.samples_left = len(self.second_background.samples)
         self.pos += self.client.buffer_size
         if self.pos > len(self.audio_buffer[0]) - self.client.buffer_size:
             self.reset_audio_buffer()
 
 theme = Environment('sounds/theme')
-dungeon = Environment('sounds/dungeon')
+dungeon = Environment('sounds/dungeon_with_fire')
 environs = [theme,dungeon]
-current_environment = theme
+current_environment = dungeon
 last = None
 with JackClient() as client:
     current_environment.set_client(client)

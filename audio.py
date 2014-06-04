@@ -101,10 +101,10 @@ class JackClient(object):
         
         self.input_buffer = numpy.zeros((1,self.buffer_size), 'f')
         self.output_buffer = numpy.ones((6,self.buffer_size), 'f')
-        x = numpy.sin( 2*numpy.pi*4400.0 * (numpy.arange(0,sec*6,1.0/(self.sample_rate),'f')[0:int(self.sample_rate*sec)*6]))
-        print len(x),int(self.sample_rate*sec)
-        self.output = numpy.reshape( x,
-                                     (6, int(self.sample_rate*sec)) ).astype('f')
+        #x = numpy.sin( 2*numpy.pi*4400.0 * (numpy.arange(0,sec*6,1.0/(self.sample_rate),'f')[0:int(self.sample_rate*sec)*6]))
+        #print len(x),int(self.sample_rate*sec)
+        #self.output = numpy.reshape( x,
+        #                             (6, int(self.sample_rate*sec)) ).astype('f')
         #for i in xrange(6):
         #    for j in xrange(self.buffer_size):
         #        self.output_buffer[i][j] = 0.5
@@ -128,8 +128,9 @@ class Sound(object):
             raise TypeError('Expected 2byte wav, got %d byte' % self.wave.getsampwidth())
         #if self.wave.getnchannels() != 1:
         #    raise TypeError('Expected mono sound')
-        
-        self.samples = numpy.array([(float(struct.unpack('<h',self.wave.readframes(1)[:2])[0])/0x8000) for i in xrange(self.wave.getnframes())]).astype('f')
+        self.samples = self.wave.readframes(self.wave.getnframes())
+        self.samples = (numpy.fromstring(self.samples,numpy.int16)[::2].astype('f'))/0x8000
+        #self.samples = numpy.array([(float(struct.unpack('<h',self.wave.readframes(1)[:2])[0])/0x8000) for i in xrange(self.wave.getnframes())]).astype('f')
 
         freq = self.wave.getframerate()
         if freq == 44100:
@@ -246,10 +247,13 @@ class Environment(object):
         if self.pos > len(self.audio_buffer[0]) - self.client.buffer_size:
             self.reset_audio_buffer()
 
-seaside = Environment('sounds/dungeon')
+theme = Environment('sounds/theme')
+dungeon = Environment('sounds/dungeon')
+environs = [theme,dungeon]
+current_environment = theme
 last = None
 with JackClient() as client:
-    seaside.set_client(client)
+    current_environment.set_client(client)
     while True:
-        seaside.process(time.time())
+        current_environment.process(time.time())
 

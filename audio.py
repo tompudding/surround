@@ -140,7 +140,7 @@ class Sound(object):
         if freq == 44100:
             pass
         elif freq == 22050:
-            self.samples = numpy.repeat(self.samples,2)
+            self.samples = numpy.repeat(self.samples,4)
         else:
             raise ValueError('Unsupported frequency %d' % freq)
         self.path_samples = None
@@ -183,18 +183,22 @@ class Environment(object):
         self.end_time = None
         self.next_environ = None
         self.fade_in_time = None
-        self.background = sounds[self.background]
+        self.background = copy.deepcopy(sounds[self.background])
+        if 'seaside' in self.background.name:
+            self.background.amplify(0.7)
         self.background.set_path(None)
         if self.second_background:
             #This is a hack only allowing two backgrounds, but I need this for sunday...
-            self.second_background = sounds[self.second_background]
+            self.second_background = copy.deepcopy(sounds[self.second_background])
             self.second_background.set_path(None)
+            if 'rope' in self.second_background.name:
+                self.second_background.amplify(2.5)
         self.repeating_sounds = [copy.deepcopy(sounds[name]) for name in self.repeating_sounds]
         for sound in self.repeating_sounds:
             sound.amplify(6)
-            #sound.set_path(None)
-            pos = Point(random.random()*2.2,random.random()*2.2)
-            sound.set_path( LinePath(pos,pos,1) )   
+            sound.set_path(None)
+            #pos = Point(random.random()*2.2,random.random()*2.2)
+            #sound.set_path( LinePath(pos,pos,1) )   
         self.optional_sounds = [copy.deepcopy(sounds[name]) for name in self.optional_sounds]
         for sound in self.optional_sounds:
             sound.amplify(6)
@@ -313,10 +317,46 @@ class Dungeon(Environment):
                         'AMB_E40A.wav',
                         'AMB_E40B.wav',
                         'AMB_E40C.wav']
+    optional_sounds = ['lockpick.wav',
+                       'horse1.wav',
+                       'horse2.wav']
 
 class DungeonPool(Dungeon):
     name = 'Dungeon with Pool'
     second_background = 'pool2.wav'
+
+class DungeonZombies(Dungeon):
+    name = 'Dungeon with Zombies'
+    repeating_sounds = [('ZOMBI0%d.wav' % i) for i in (1,2,3,4,6)]
+
+class DungeonStream(Dungeon):
+    name = 'Dungeon with Stream'
+    second_background = 'stream.wav'
+
+class Seaside(Environment):
+    name = 'Seaside'
+    background = 'seaside_background.wav'
+    repeating_sounds = ['AMB_E21.wav',
+                        'AMB_E21A.wav',
+                        'AMB_E21D.wav',
+                        'bird_flapping.wav']
+    
+class SeasideRopeBridge(Seaside):
+    name = 'Seaside with rope bridge'
+    second_background = 'wind_rope.wav'
+
+class Tavern(Environment):
+    name = 'talking tavern'
+    background = 'AMB_M09B.wav'
+
+class WhiteDeer(Tavern):
+    name = 'white dear'
+    second_background = 'AMB_TAV.wav'
+
+class Town(Environment):
+    name = 'town'
+    background = 'AMB_M14.wav'
+    
 
 class View(object):
     def __init__(self,h,w,y,x):
@@ -388,12 +428,20 @@ class SoundChooser(Chooser):
         self.selected = 0
 
     def choose(self,chosen):
-        pass
+        self.parent.current_environment.add_sound_to_buffer(self.list[chosen])
 
 class SoundControl(object):
     environments = [Theme,
                     DungeonPool,
-                    Dungeon]
+                    Dungeon,
+                    DungeonZombies,
+                    DungeonStream,
+                    Seaside,
+                    SeasideRopeBridge,
+                    Tavern,
+                    WhiteDeer,
+                    Town,
+                    ]
     def __init__(self,path,stdscr):
         self.sounds = {}
         for root,dirs,files in os.walk('sounds'):

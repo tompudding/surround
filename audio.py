@@ -6,7 +6,18 @@ import struct
 import glob
 import os
 import random
+import sys
+import threading
 from point import Point
+
+class StdOutWrapper:
+    text = []
+    def write(self,txt):
+        self.text.append(txt)
+        if len(self.text) > 500:
+            self.text = self.text[:500]
+    def get_text(self):
+        return ''.join(self.text)
 
 class Speakers(object):
     positions = ( Point(0.3,1.1),
@@ -117,6 +128,7 @@ class Sound(object):
     def __init__(self,filename):
         print 'loading',filename
         self.wave = wave.open(filename)
+        self.name = os.path.basename(filename)
         if self.wave.getsampwidth() != 2:
             raise TypeError('Expected 2byte wav, got %d byte' % self.wave.getsampwidth())
 
@@ -158,11 +170,16 @@ class Sound(object):
         
 class Environment(object):
     random_sound_period = 3.0
+    fade_duration = 2.0
     def __init__(self,path):
         self.sounds = []
         self.client = None
         self.background = None
         self.second_background = None
+        self.end_time = None
+        self.next_environ = None
+        self.fade_in_time = None
+        self.name = os.path.basename(path)
         for filename in glob.glob(os.path.join(path,'*.wav')):
             sound = Sound(filename)
             if os.path.basename(filename) == 'background.wav':
@@ -226,14 +243,31 @@ class Environment(object):
         if self.start == None:
             self.start = t
             self.last_sound = t
-            return
+            return self
         elapsed = t - self.last_sound
         if self.timeline and elapsed > self.timeline[0][0]:
             x,random_sound = self.timeline.pop(0)
             self.last_sound = t
             self.add_sound_to_buffer(random_sound)
             self.add_random_sound()
-        self.client.play(self.audio_buffer[:,self.pos:self.pos+self.client.buffer_size])
+        if self.end_time:
+            if t > self.end_time:
+                self.end_time = None
+                out = self.next_environ
+                self.next_environ = None
+                out.fade_in()
+                return out
+            partial = float(self.end_time-t)/(self.fade_duration)
+            self.client.play(self.audio_buffer[:,self.pos:self.pos+self.client.buffer_size]*partial)
+        elif self.fade_in_time:
+            if t > self.fade_in_time:
+                self.fade_in_time = None
+                partial = 1.0
+            else:
+                partial = 1-(float(self.fade_in_time-t)/self.fade_duration)
+            self.client.play(self.audio_buffer[:,self.pos:self.pos+self.client.buffer_size]*partial)
+        else:
+            self.client.play(self.audio_buffer[:,self.pos:self.pos+self.client.buffer_size])
         if self.second_background:
             self.second_background.samples_left -= self.client.buffer_size
             if self.second_background.samples_left < self.client.buffer_size:
@@ -242,14 +276,170 @@ class Environment(object):
         self.pos += self.client.buffer_size
         if self.pos > len(self.audio_buffer[0]) - self.client.buffer_size:
             self.reset_audio_buffer()
+        return self
 
-theme = Environment('sounds/theme')
-dungeon = Environment('sounds/dungeon_with_fire')
-environs = [theme,dungeon]
-current_environment = dungeon
-last = None
-with JackClient() as client:
-    current_environment.set_client(client)
-    while True:
-        current_environment.process(time.time())
+    def fade_out(self,end_time,next_environ):
+        self.end_time = time.time() + self.fade_duration
+        self.next_environ = next_environ
 
+    def fade_in(self):
+        self.fade_in_time = time.time() + self.fade_duration
+        
+
+class View(object):
+    def __init__(self,h,w,y,x):
+        self.width  = w
+        self.height = h
+        self.startx = x
+        self.starty = y
+        self.window = curses.newwin(self.height,self.width,self.starty,self.startx)
+        self.window.keypad(1)
+
+    def Centre(self,pos):
+        pass
+
+    def Select(self,pos):
+        pass
+
+    def input(self):
+        pass
+
+class Chooser(View):
+    label_width = 14
+    def __init__(self,parent,h,w,y,x):
+        super(Chooser,self).__init__(h,w,y,x)
+        self.selected = 0
+        self.parent = parent
+
+    def Draw(self,draw_border = False):
+        self.window.clear()
+        if draw_border:
+            self.window.border()
+        
+        for i,item in enumerate(self.list):
+            if i == self.selected:
+                self.selected_pos = i
+                self.window.addstr(i+1,1,item.name,curses.A_REVERSE)
+            else:
+                #print i,line
+                self.window.addstr(i+1,1,item.name)
+        self.window.refresh()
+
+    def input(self,ch):
+        if ch == curses.KEY_UP:
+            if self.selected > 0:
+                self.selected -= 1
+        elif ch == curses.KEY_DOWN:
+            if self.selected < len(self.list)-1:
+                self.selected += 1
+        elif ch == ord(' '):
+            self.choose(self.selected)
+        elif ch == ord('q'):
+            self.parent.quit()
+        self.Draw(self is self.parent.current_view)
+
+class EnvironChooser(Chooser):
+    def __init__(self,parent,h,w,y,x):
+        super(EnvironChooser,self).__init__(parent,h,w,y,x)
+        self.list = self.parent.environs
+
+    def choose(self,chosen):
+        self.parent.fade_out(self.list[chosen])
+
+class SoundChooser(Chooser):
+    def __init__(self,parent,h,w,y,x):
+        super(SoundChooser,self).__init__(parent,h,w,y,x)
+        self.reset_list()
+
+    def reset_list(self):
+        self.list = self.parent.current_environment.sounds
+        self.selected = 0
+
+    def choose(self,chosen):
+        pass
+
+class SoundControl(object):
+    def __init__(self,path,stdscr):
+        theme = Environment(os.path.join(path,'theme'))
+        dungeon = Environment(os.path.join(path,'dungeon_with_fire'))
+        self.environs = [theme,dungeon]
+        self.current_environment = theme
+        self.stdscr = stdscr
+        self.thread = None
+        self.h,self.w = self.stdscr.getmaxyx()
+        self.environ_chooser = EnvironChooser(self,self.h,self.w/2,0,0)
+        self.sound_chooser = SoundChooser(self,self.h,self.w/2,0,self.w/2)
+        self.current_view = self.environ_chooser
+        self.thread = threading.Thread(target = self.thread_run)
+        self.redraw()
+
+    def redraw(self):
+        for window in self.sound_chooser,self.environ_chooser:
+            window.Draw(window is self.current_view)
+
+    def __enter__(self):
+        self.alive = True
+        if self.thread:
+            self.thread.start()
+        return self
+
+    def __exit__(self,type, value, traceback):
+        self.alive = False
+        if self.thread:
+            self.thread.join()
+        return False
+
+    def quit(self):
+        self.alive = False
+        
+    def run(self):
+        with JackClient() as client:
+            for environment in self.environs:
+                environment.set_client(client)
+            while self.alive:
+                new_environment = self.current_environment.process(time.time())
+                if new_environment is not self.current_environment:
+                    self.current_environment = new_environment
+                    self.sound_chooser.reset_list()
+                    self.sound_chooser.Draw()
+
+    def thread_run(self):
+        while self.alive:
+            ch = self.current_view.window.getch()
+            if ch == ord('\t'):
+                self.next_view()
+            else:
+                self.current_view.input(ch)
+        
+    def next_view(self):
+        if self.current_view == self.environ_chooser:
+            self.current_view = self.sound_chooser
+        else:
+            self.current_view = self.environ_chooser
+        self.redraw()
+
+    def fade_out(self,next_environ):
+        self.current_environment.fade_out(time.time()+2.0,next_environ)
+   
+
+def main(stdscr):
+    curses.curs_set(0)
+    with SoundControl('sounds',stdscr) as sounds:
+        sounds.run()
+        #while True:
+        #    time.sleep(1)
+
+if __name__ == '__main__':
+    #main(None)
+    #raise SystemExit
+    import curses
+    mystdout = StdOutWrapper()
+    sys.stdout = mystdout
+    sys.stderr = mystdout
+    try:
+        curses.wrapper(main)
+    finally:
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        sys.stdout.write(mystdout.get_text())
+        

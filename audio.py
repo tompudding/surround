@@ -8,6 +8,7 @@ import os
 import random
 import sys
 import threading
+import copy
 from point import Point
 
 class StdOutWrapper:
@@ -150,7 +151,8 @@ class Sound(object):
 
     def set_path(self,path):
         #map samples to path
-        self.path_samples = numpy.tile(self.samples, (6,1))
+        if self.path_samples == None:
+            self.path_samples = numpy.tile(self.samples, (6,1))
         if path != None:
             self.moving = True
             num_segments = len(path.points)
@@ -171,28 +173,33 @@ class Sound(object):
 class Environment(object):
     random_sound_period = 3.0
     fade_duration = 2.0
-    def __init__(self,path):
-        self.sounds = []
+    background = None
+    second_background = None
+    repeating_sounds = []
+    optional_sounds = []
+    name = None
+    def __init__(self,sounds):
         self.client = None
-        self.background = None
-        self.second_background = None
         self.end_time = None
         self.next_environ = None
         self.fade_in_time = None
-        self.name = os.path.basename(path)
-        for filename in glob.glob(os.path.join(path,'*.wav')):
-            sound = Sound(filename)
-            if os.path.basename(filename) == 'background.wav':
-                self.background = sound
-            elif os.path.basename(filename) == 'second_background.wav':
-                #This is a hack only allowing two backgrounds, but I need this for sunday...
-                self.second_background = sound
-                self.second_background.set_path(None)
-            else:
-                sound.amplify(6)
-                pos = Point(random.random()*2.2,random.random()*2.2)
-                sound.set_path( LinePath(pos,pos,1) )
-                self.sounds.append(sound)
+        self.background = sounds[self.background]
+        self.background.set_path(None)
+        if self.second_background:
+            #This is a hack only allowing two backgrounds, but I need this for sunday...
+            self.second_background = sounds[self.second_background]
+            self.second_background.set_path(None)
+        self.repeating_sounds = [copy.deepcopy(sounds[name]) for name in self.repeating_sounds]
+        for sound in self.repeating_sounds:
+            sound.amplify(6)
+            #sound.set_path(None)
+            pos = Point(random.random()*2.2,random.random()*2.2)
+            sound.set_path( LinePath(pos,pos,1) )   
+        self.optional_sounds = [copy.deepcopy(sounds[name]) for name in self.optional_sounds]
+        for sound in self.optional_sounds:
+            sound.amplify(6)
+            pos = Point(random.random()*2.2,random.random()*2.2)
+            sound.set_path( LinePath(pos,pos,1) )   
         
         self.timeline = []
         for i in xrange(10):
@@ -203,12 +210,12 @@ class Environment(object):
         self.reset_audio_buffer()
 
     def add_random_sound(self):
-        if not self.sounds:
+        if not self.repeating_sounds:
             return
         next_gap = random.expovariate(1/self.random_sound_period)
         if next_gap < 1:
             next_gap = 1.0
-        self.timeline.append( (next_gap,random.choice(self.sounds)) ) 
+        self.timeline.append( (next_gap,random.choice(self.repeating_sounds)) ) 
 
     def set_client(self,client):
         self.client = client
@@ -232,10 +239,13 @@ class Environment(object):
         self.audio_buffer = numpy.column_stack([self.audio_buffer,extra])
         
     def reset_audio_buffer(self):
+        if self.second_background:
+            if len(self.second_background.samples) > len(self.background.samples):
+                self.background,self.second_background = self.second_background,self.background
         self.audio_buffer = numpy.tile(self.background.samples, (6,1)).astype('f')
         self.pos = 0
         if self.second_background:
-            assert len(self.second_background.samples) < len(self.background.samples)
+            assert len(self.second_background.samples) <= len(self.background.samples)
             self.audio_buffer[:,:len(self.second_background.samples)] += self.second_background.path_samples
             self.second_background.samples_left = len(self.second_background.samples)
         
@@ -285,6 +295,28 @@ class Environment(object):
     def fade_in(self):
         self.fade_in_time = time.time() + self.fade_duration
         
+class Theme(Environment):
+    name = 'Theme'
+    background = 'theme.wav'
+
+class Dungeon(Environment):
+    name = 'Dungeon'
+    background = 'dungeon_background.wav'
+    repeating_sounds = ['AMB_E15A.wav',
+                        'AMB_E15B.wav',
+                        'AMB_E15C.wav',
+                        'AMB_E15D.wav',
+                        'AMB_E16A.wav',
+                        'AMB_E16B.wav',
+                        'AMB_E17A.wav',
+                        'AMB_E17B.wav',
+                        'AMB_E40A.wav',
+                        'AMB_E40B.wav',
+                        'AMB_E40C.wav']
+
+class DungeonPool(Dungeon):
+    name = 'Dungeon with Pool'
+    second_background = 'pool2.wav'
 
 class View(object):
     def __init__(self,h,w,y,x):
@@ -352,18 +384,24 @@ class SoundChooser(Chooser):
         self.reset_list()
 
     def reset_list(self):
-        self.list = self.parent.current_environment.sounds
+        self.list = self.parent.current_environment.optional_sounds
         self.selected = 0
 
     def choose(self,chosen):
         pass
 
 class SoundControl(object):
+    environments = [Theme,
+                    DungeonPool,
+                    Dungeon]
     def __init__(self,path,stdscr):
-        theme = Environment(os.path.join(path,'theme'))
-        dungeon = Environment(os.path.join(path,'dungeon_with_fire'))
-        self.environs = [theme,dungeon]
-        self.current_environment = theme
+        self.sounds = {}
+        for root,dirs,files in os.walk('sounds'):
+            for filename in files:
+                if filename.endswith('.wav'):
+                    self.sounds[filename] = Sound(os.path.join(root,filename))
+        self.environs = [environ(self.sounds) for environ in self.environments]
+        self.current_environment = self.environs[0]
         self.stdscr = stdscr
         self.thread = None
         self.h,self.w = self.stdscr.getmaxyx()

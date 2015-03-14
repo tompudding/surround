@@ -7,9 +7,12 @@ import glob
 import os
 import random
 import sys
+import multiprocessing
 import threading
 import copy
 from point import Point
+
+debug_log = open('/tmp/surround_log.txt','wb')
 
 class StdOutWrapper:
     text = []
@@ -20,6 +23,9 @@ class StdOutWrapper:
     def get_text(self):
         return ''.join(self.text)
 
+    def flush(self):
+        pass
+
 class Speakers(object):
     positions = ( Point(0.3,1.1),
                   Point(0.0,1.3),
@@ -28,14 +34,15 @@ class Speakers(object):
                   Point(2.2,0.3),
                   Point(1.3,1.0))
     min_falloff = 0.5
-    
+
+
     def __init__(self,positions):
         self.positions = positions
 
     def get_volumes(self,p):
-        distances = numpy.array([self.falloff((p-point).length()) for point in self.positions])
+        distances = numpy.array([self.falloff((p-point).length()) for point in self.positions],ndmin=2).T
         return distances
-    
+
     def falloff(self,distance):
         if distance < self.min_falloff:
             return 1.0
@@ -103,14 +110,14 @@ class JackClient(object):
             name = '%s:%s' % (self.name,port)
             print name,target
             self.client.connect(name,target)
-        
+
 
         self.sample_rate = self.client.get_sample_rate()
         self.buffer_size = self.client.get_buffer_size()
         print self.buffer_size
         sec = 18.0
         self.pos = 0
-        
+
         self.input_buffer = numpy.zeros((1,self.buffer_size), 'f')
         self.output_buffer = numpy.ones((6,self.buffer_size), 'f')
 
@@ -124,6 +131,15 @@ class JackClient(object):
 
     def close(self):
         self.client.deactivate()
+
+def column_stack2(cols):
+    """Faster version of numpy.column_stack."""
+    rows = len(cols[0])
+    assert all(len(col) == rows for col in cols)
+    data = numpy.empty((rows, len(cols)))
+    for i, d in enumerate(cols):
+        data[:,i] = d
+    return data
 
 class Sound(object):
     def __init__(self,filename):
@@ -153,23 +169,35 @@ class Sound(object):
         #map samples to path
         if self.path_samples == None:
             self.path_samples = numpy.tile(self.samples, (6,1))
+
         if path != None:
             self.moving = True
             num_segments = len(path.points)
             samples_per_segment = len(self.samples)/num_segments
+            debug_log.write('  generate volumes\n')
+            debug_log.flush()
             in_volumes = [speakers.get_volumes(point) for point in path.points]
-            volumes = []
+            volumes = numpy.empty((6,len(self.samples)))
+            current_col = 0
             for i,volume in enumerate(in_volumes):
                 if i + 1 < len(in_volumes):
                     num = samples_per_segment
                 else:
                     #last one
                     num = len(self.samples)-(samples_per_segment*(num_segments-1))
-                volumes.extend([volume]*num)
-            volumes = numpy.column_stack(volumes)
+                debug_log.write('    extend volumes %d of %d\n' % (i+1,len(in_volumes)))
+                debug_log.flush()
+                #volumes.extend([volume]*num)
+                volumes[:,current_col:current_col+num] = numpy.repeat(volume,num,axis=1)
+                current_col += num
+            #debug_log.write('  column stack\n')
+            #debug_log.flush()
+            #volumes = column_stack2(volumes)
+            debug_log.write('  multiply\n')
+            debug_log.flush()
             self.path_samples *= volumes
-        
-        
+
+
 class Environment(object):
     random_sound_period = 3.0
     fade_duration = 2.0
@@ -183,6 +211,8 @@ class Environment(object):
         self.end_time = None
         self.next_environ = None
         self.fade_in_time = None
+        debug_log.write('environ %s\n' % self.name)
+        debug_log.flush()
         self.background = copy.deepcopy(sounds[self.background])
         if 'seaside' in self.background.name:
             self.background.amplify(0.7)
@@ -198,17 +228,26 @@ class Environment(object):
             sound.amplify(6)
             sound.set_path(None)
             #pos = Point(random.random()*2.2,random.random()*2.2)
-            #sound.set_path( LinePath(pos,pos,1) )   
+            #sound.set_path( LinePath(pos,pos,1) )
         self.optional_sounds = [copy.deepcopy(sounds[name]) for name in self.optional_sounds]
+        for sound in sounds:
+            if sound.startswith('human'):
+                self.optional_sounds.append(copy.deepcopy(sounds[sound]))
+        for sound in sounds:
+            print sound
+            if sound.startswith('CAS') and random.random() < 0.3:
+                self.optional_sounds.append(copy.deepcopy(sounds[sound]))
+            if len(self.optional_sounds) > 10:
+                break
         for sound in self.optional_sounds:
-            sound.amplify(6)
+            sound.amplify(8)
             pos = Point(random.random()*2.2,random.random()*2.2)
-            sound.set_path( LinePath(pos,pos,1) )   
-        
+            sound.set_path( LinePath(pos,pos,1) )
+
         self.timeline = []
         for i in xrange(10):
             self.add_random_sound()
-            
+
         self.start = None
         self.last_sound = None
         self.reset_audio_buffer()
@@ -219,7 +258,7 @@ class Environment(object):
         next_gap = random.expovariate(1/self.random_sound_period)
         if next_gap < 1:
             next_gap = 1.0
-        self.timeline.append( (next_gap,random.choice(self.repeating_sounds)) ) 
+        self.timeline.append( (next_gap,random.choice(self.repeating_sounds)) )
 
     def set_client(self,client):
         self.client = client
@@ -241,7 +280,7 @@ class Environment(object):
     def extend_audio_buffer(self):
         extra = numpy.tile(self.background.samples, (6,1)).astype('f')
         self.audio_buffer = numpy.column_stack([self.audio_buffer,extra])
-        
+
     def reset_audio_buffer(self):
         if self.second_background:
             if len(self.second_background.samples) > len(self.background.samples):
@@ -252,7 +291,7 @@ class Environment(object):
             assert len(self.second_background.samples) <= len(self.background.samples)
             self.audio_buffer[:,:len(self.second_background.samples)] += self.second_background.path_samples
             self.second_background.samples_left = len(self.second_background.samples)
-        
+
     def process(self,t):
         if self.start == None:
             self.start = t
@@ -298,7 +337,7 @@ class Environment(object):
 
     def fade_in(self):
         self.fade_in_time = time.time() + self.fade_duration
-        
+
 class Theme(Environment):
     name = 'Theme'
     background = 'theme.wav'
@@ -340,7 +379,10 @@ class Seaside(Environment):
                         'AMB_E21A.wav',
                         'AMB_E21D.wav',
                         'bird_flapping.wav']
-    
+    optional_sounds = ['lockpick.wav',
+                       'horse1.wav',
+                       'horse2.wav']
+
 class SeasideRopeBridge(Seaside):
     name = 'Seaside with rope bridge'
     second_background = 'wind_rope.wav'
@@ -356,7 +398,7 @@ class WhiteDeer(Tavern):
 class Town(Environment):
     name = 'town'
     background = 'AMB_M14.wav'
-    
+
 
 class View(object):
     def __init__(self,h,w,y,x):
@@ -387,7 +429,7 @@ class Chooser(View):
         self.window.clear()
         if draw_border:
             self.window.border()
-        
+
         for i,item in enumerate(self.list):
             if i == self.selected:
                 self.selected_pos = i
@@ -456,7 +498,10 @@ class SoundControl(object):
         self.environ_chooser = EnvironChooser(self,self.h,self.w/2,0,0)
         self.sound_chooser = SoundChooser(self,self.h,self.w/2,0,self.w/2)
         self.current_view = self.environ_chooser
+        self.message_queue = multiprocessing.Queue()
         self.thread = threading.Thread(target = self.thread_run)
+        #self.proc = multiprocessing.Process(target = self.process_run, args=(self.message_queue,))
+        self.proc = None
         self.redraw()
 
     def redraw(self):
@@ -467,17 +512,21 @@ class SoundControl(object):
         self.alive = True
         if self.thread:
             self.thread.start()
+        if self.proc:
+            self.proc.start()
         return self
 
     def __exit__(self,type, value, traceback):
         self.alive = False
         if self.thread:
             self.thread.join()
+        if self.proc:
+            self.proc.terminate()
         return False
 
     def quit(self):
         self.alive = False
-        
+
     def run(self):
         with JackClient() as client:
             for environment in self.environs:
@@ -489,6 +538,11 @@ class SoundControl(object):
                     self.sound_chooser.reset_list()
                     self.sound_chooser.Draw()
 
+    # def thread_run(self):
+    #     while self.alive:
+    #         ch = self.message_queue.get()
+    #         self.current_view.input(ch)
+
     def thread_run(self):
         while self.alive:
             ch = self.current_view.window.getch()
@@ -496,7 +550,20 @@ class SoundControl(object):
                 self.next_view()
             else:
                 self.current_view.input(ch)
-        
+
+    def process_run(self, message_queue):
+        self.message_queue = message_queue #Does this do anything?
+        while self.alive:
+            ch = self.current_view.window.getch()
+            if ch == ord('\t'):
+                self.next_view()
+            elif ch == ord('q') or ch == ord(' '):
+                print 'bam going in the queue'
+                self.message_queue.put(ch)
+                print self.message_queue
+            else:
+                self.current_view.input(ch)
+
     def next_view(self):
         if self.current_view == self.environ_chooser:
             self.current_view = self.sound_chooser
@@ -506,7 +573,7 @@ class SoundControl(object):
 
     def fade_out(self,next_environ):
         self.current_environment.fade_out(time.time()+2.0,next_environ)
-   
+
 
 def main(stdscr):
     curses.curs_set(0)
@@ -514,6 +581,11 @@ def main(stdscr):
         sounds.run()
         #while True:
         #    time.sleep(1)
+
+def profile_main(stdscr):
+    import cProfile
+    import re
+    cProfile.runctx('old_main(stdscr)',globals(),locals(),'audio_stats')
 
 if __name__ == '__main__':
     #main(None)
@@ -528,4 +600,3 @@ if __name__ == '__main__':
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
         sys.stdout.write(mystdout.get_text())
-        

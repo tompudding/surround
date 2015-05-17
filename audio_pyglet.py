@@ -38,8 +38,11 @@ class StdOutWrapper:
 
 class Sound(object):
     def __init__(self,filename):
-        self.wave = pyglet.media.load
+        self.wave = pyglet.media.load(filename, streaming = False)
         self.name = os.path.basename(filename)
+
+    def play(self):
+        self.wave.play()
 
     def amplify(self,scale):
         pass
@@ -47,12 +50,28 @@ class Sound(object):
     def set_path(self,path):
         pass
 
+class RepeatingSound(object):
+    def __init__(self,sound):
+        self.sound = sound
+        self.player = pyglet.media.Player()
+        self.sg = pyglet.media.SourceGroup(self.sound.wave.audio_format, '')
+        self.sg.queue(self.sound.wave)
+        self.sg.loop = True
+        self.player.queue(self.sg)
+
+    def play(self):
+        self.player.play()
+
+    def stop(self):
+        self.player.pause()
+
+    def on_eos(self):
+        print 'bloop'
 
 class Environment(object):
     random_sound_period = 3.0
     fade_duration = 2.0
-    background = None
-    second_background = None
+    background_names = []
     repeating_sounds = []
     optional_sounds = []
     name = None
@@ -63,8 +82,7 @@ class Environment(object):
         self.fade_in_time = None
         debug_log.write('environ %s\n' % self.name)
         debug_log.flush()
-        self.background = sounds[self.background]
-
+        self.backgrounds = [RepeatingSound(sounds[bg]) for bg in self.background_names]
 
         self.repeating_sounds = [sounds[name] for name in self.repeating_sounds]
         self.optional_sounds = [sounds[name] for name in self.optional_sounds]
@@ -72,7 +90,6 @@ class Environment(object):
             if sound.startswith('human'):
                 self.optional_sounds.append(sounds[sound])
         for sound in sounds:
-            print sound
             if sound.startswith('CAS') and random.random() < 0.3:
                 self.optional_sounds.append(sounds[sound])
             if len(self.optional_sounds) > 10:
@@ -95,12 +112,27 @@ class Environment(object):
 
     def add_sound_to_buffer(self,sound,random_position = True):
         #Cut the audio_buffer at this point
+        sound.play()
         pass
+
+    def set_volume(self,volume):
+        return
+        for bg in self.backgrounds:
+           bg.player.volume = volume
+
+    def play(self):
+        for bg in self.backgrounds:
+            bg.play()
+
+    def stop(self):
+        for bg in self.backgrounds:
+            bg.stop()
 
     def process(self,t):
         if self.start == None:
             self.start = t
             self.last_sound = t
+            self.play()
             return self
         elapsed = t - self.last_sound
         if self.timeline and elapsed > self.timeline[0][0]:
@@ -108,38 +140,40 @@ class Environment(object):
             self.last_sound = t
             self.add_sound_to_buffer(random_sound)
             self.add_random_sound()
-        if self.end_time:
-            if t > self.end_time:
-                self.end_time = None
-                out = self.next_environ
-                self.next_environ = None
-                out.fade_in()
-                return out
-            partial = float(self.end_time-t)/(self.fade_duration)
-        elif self.fade_in_time:
+        if self.next_environ:
+            self.stop()
+            self.start = None
+            out = self.next_environ
+            self.next_environ = None
+            out.fade_in()
+            return out
+        elif 0 and self.fade_in_time:
             if t > self.fade_in_time:
                 self.fade_in_time = None
                 partial = 1.0
             else:
                 partial = 1-(float(self.fade_in_time-t)/self.fade_duration)
+            self.set_volume(partial)
 
         return self
 
 
     def fade_out(self,end_time,next_environ):
-        self.end_time = time.time() + self.fade_duration
+        self.stop()
+        #self.end_time = time.time() + self.fade_duration
         self.next_environ = next_environ
 
     def fade_in(self):
-        self.fade_in_time = time.time() + self.fade_duration
+        #self.fade_in_time = time.time() + self.fade_duration
+        self.play()
 
 class Theme(Environment):
     name = 'Theme'
-    background = 'theme.wav'
+    background_names = ['theme.wav']
 
 class Dungeon(Environment):
     name = 'Dungeon'
-    background = 'dungeon_background.wav'
+    background_names = ['dungeon_background.wav']
     repeating_sounds = ['AMB_E15A.wav',
                         'AMB_E15B.wav',
                         'AMB_E15C.wav',
@@ -157,26 +191,24 @@ class Dungeon(Environment):
 
 class DungeonPool(Dungeon):
     name = 'Dungeon with Pool'
-    second_background = 'pool2.wav'
+    background_names = Dungeon.background_names + ['pool2.wav']
 
 class DungeonSpooky(Dungeon):
     name = 'Dungeon Spooky'
-    second_background = 'dungeon_music.wav'
+    background_names = Dungeon.background_names + ['dungeon_music.wav']
 
 class DungeonFight(Dungeon):
     name = 'Dungeon Fight'
-    background = 'dungeon_fightmusic.wav'
-    second_background = Dungeon.background
+    background_names = Dungeon.background_names + ['dungeon_fightmusic.wav']
 
 class DungeonFight1(Dungeon):
     name = 'Dungeon Fight1'
-    background = 'dungeon_fightmusic1.wav'
-    second_background = Dungeon.background
+    background_names = Dungeon.background_names + ['dungeon_fightmusic1.wav']
 
 
 class DungeonMessage(Dungeon):
     name = 'Dungeon Message'
-    second_background = 'foreign.wav'
+    background_names = Dungeon.background_names + ['foreign.wav']
 
 
 class DungeonZombies(Dungeon):
@@ -185,11 +217,11 @@ class DungeonZombies(Dungeon):
 
 class DungeonStream(Dungeon):
     name = 'Dungeon with Stream'
-    second_background = 'stream.wav'
+    background_names = Dungeon.background_names + ['stream.wav']
 
 class Seaside(Environment):
     name = 'Seaside'
-    background = 'seaside_background.wav'
+    background_names = ['seaside_background.wav']
     repeating_sounds = ['AMB_E21.wav',
                         'AMB_E21A.wav',
                         'AMB_E21D.wav',
@@ -200,24 +232,24 @@ class Seaside(Environment):
 
 class Outside(Environment):
     name = 'outside'
-    background = 'ambient.wav'
+    background_names = ['ambient.wav']
     repeating_sounds = ['bird_flapping.wav']
 
 class SeasideRopeBridge(Seaside):
     name = 'Seaside with rope bridge'
-    second_background = 'wind_rope.wav'
+    backgrounds_names = Seaside.backgrounds = ['wind_rope.wav']
 
 class Tavern(Environment):
     name = 'talking tavern'
-    background = 'AMB_M09B.wav'
+    background_names = ['AMB_M09B.wav']
 
 class WhiteDeer(Tavern):
     name = 'white dear'
-    second_background = 'AMB_TAV.wav'
+    background_names = Tavern.background_names +  ['AMB_TAV.wav']
 
 class Town(Environment):
     name = 'town'
-    background = 'AMB_M14.wav'
+    background_names = ['AMB_M14.wav']
 
 
 class View(object):
@@ -255,7 +287,6 @@ class Chooser(View):
                 self.selected_pos = i
                 self.window.addstr(i+1,1,item.name,curses.A_REVERSE)
             else:
-                #print i,line
                 self.window.addstr(i+1,1,item.name)
         self.window.refresh()
 
@@ -326,8 +357,6 @@ class SoundControl(object):
         self.message_queue = multiprocessing.Queue()
         self.message_queue_back = multiprocessing.Queue()
         self.thread = threading.Thread(target = self.thread_run)
-        self.music = pyglet.media.load('sounds/theme/theme.wav')
-        self.music.play()
         #self.proc = multiprocessing.Process(target = self.process_run, args=(self.message_queue,))
         #self.proc = None
         self.redraw()
@@ -364,14 +393,15 @@ class SoundControl(object):
             self.sound_chooser.Draw()
 
     def thread_run(self):
-        pyglet.app.run()
-
-    def run(self):
         while self.alive:
             ch = self.current_view.window.getch()
             if ch == ord('\t'):
                 self.next_view()
             self.current_view.input(ch)
+
+    def run(self):
+        pyglet.app.run()
+
 
     def process_thread_run(self):
         while self.alive:

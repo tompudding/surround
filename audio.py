@@ -114,7 +114,6 @@ class JackClient(object):
 
         self.sample_rate = self.client.get_sample_rate()
         self.buffer_size = self.client.get_buffer_size()
-        print self.buffer_size
         sec = 18.0
         self.pos = 0
 
@@ -364,6 +363,26 @@ class DungeonPool(Dungeon):
     name = 'Dungeon with Pool'
     second_background = 'pool2.wav'
 
+class DungeonSpooky(Dungeon):
+    name = 'Dungeon Spooky'
+    second_background = 'dungeon_music.wav'
+
+class DungeonFight(Dungeon):
+    name = 'Dungeon Fight'
+    background = 'dungeon_fightmusic.wav'
+    second_background = Dungeon.background
+
+class DungeonFight1(Dungeon):
+    name = 'Dungeon Fight1'
+    background = 'dungeon_fightmusic1.wav'
+    second_background = Dungeon.background
+
+
+class DungeonMessage(Dungeon):
+    name = 'Dungeon Message'
+    second_background = 'foreign.wav'
+
+
 class DungeonZombies(Dungeon):
     name = 'Dungeon with Zombies'
     repeating_sounds = [('ZOMBI0%d.wav' % i) for i in (1,2,3,4,6)]
@@ -382,6 +401,11 @@ class Seaside(Environment):
     optional_sounds = ['lockpick.wav',
                        'horse1.wav',
                        'horse2.wav']
+
+class Outside(Enrivonment):
+    name = 'outside'
+    background = 'ambient.wav'
+    repeating_sounds = ['bird_flapping.wav']
 
 class SeasideRopeBridge(Seaside):
     name = 'Seaside with rope bridge'
@@ -476,7 +500,10 @@ class SoundControl(object):
     environments = [Theme,
                     DungeonPool,
                     Dungeon,
-                    DungeonZombies,
+                    DungeonFight,
+                    DungeonFight1,
+                    DungeonMessage,
+                    DungeonSpooky,
                     DungeonStream,
                     Seaside,
                     SeasideRopeBridge,
@@ -497,11 +524,14 @@ class SoundControl(object):
         self.h,self.w = self.stdscr.getmaxyx()
         self.environ_chooser = EnvironChooser(self,self.h,self.w/2,0,0)
         self.sound_chooser = SoundChooser(self,self.h,self.w/2,0,self.w/2)
-        self.current_view = self.environ_chooser
+        self.views = [self.environ_chooser,self.sound_chooser]
+        self.view_index = 0
+        self.current_view = self.views[self.view_index]
         self.message_queue = multiprocessing.Queue()
+        self.message_queue_back = multiprocessing.Queue()
         self.thread = threading.Thread(target = self.thread_run)
-        #self.proc = multiprocessing.Process(target = self.process_run, args=(self.message_queue,))
-        self.proc = None
+        self.proc = multiprocessing.Process(target = self.process_run, args=(self.message_queue,))
+        #self.proc = None
         self.redraw()
 
     def redraw(self):
@@ -535,40 +565,53 @@ class SoundControl(object):
                 new_environment = self.current_environment.process(time.time())
                 if new_environment is not self.current_environment:
                     self.current_environment = new_environment
+                    index = self.environs.index(new_environment)
+                    self.message_queue_back.put(index)
                     self.sound_chooser.reset_list()
                     self.sound_chooser.Draw()
 
-    # def thread_run(self):
-    #     while self.alive:
-    #         ch = self.message_queue.get()
-    #         self.current_view.input(ch)
-
     def thread_run(self):
         while self.alive:
-            ch = self.current_view.window.getch()
-            if ch == ord('\t'):
-                self.next_view()
-            else:
-                self.current_view.input(ch)
+            ch,view_index,item_index = self.message_queue.get()
+            self.view_index = view_index
+            self.current_view = self.views[self.view_index]
+            self.current_view.selected = item_index
+            self.current_view.input(ch)
+
+    # def thread_run(self):
+    #     while self.alive:
+    #         ch = self.current_view.window.getch()
+    #         if ch == ord('\t'):
+    #             self.next_view()
+    #         else:
+    #             self.current_view.input(ch)
 
     def process_run(self, message_queue):
         self.message_queue = message_queue #Does this do anything?
+        self.proc_thread = threading.Thread(target = self.process_thread_run)
+        self.proc_thread.start()
         while self.alive:
             ch = self.current_view.window.getch()
             if ch == ord('\t'):
                 self.next_view()
             elif ch == ord('q') or ch == ord(' '):
                 print 'bam going in the queue'
-                self.message_queue.put(ch)
+                self.message_queue.put((ch,self.view_index,self.current_view.selected))
                 print self.message_queue
             else:
                 self.current_view.input(ch)
+        self.proc_thread.join()
+
+    def process_thread_run(self):
+        while self.alive:
+            environ_index = self.message_queue_back.get()
+            self.current_environment = self.environs[environ_index]
+            self.sound_chooser.reset_list()
+            self.sound_chooser.Draw()
 
     def next_view(self):
-        if self.current_view == self.environ_chooser:
-            self.current_view = self.sound_chooser
-        else:
-            self.current_view = self.environ_chooser
+        self.view_index = (self.view_index + 1)%len(self.views)
+        self.current_view = self.views[self.view_index]
         self.redraw()
 
     def fade_out(self,next_environ):
